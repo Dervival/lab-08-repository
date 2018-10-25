@@ -15,14 +15,16 @@ client.on('err', err => console.log(err));
 
 const app = express();
 
+const apiUrls = {
+  Yelps:`https://api.yelp.com/v3/businesses/search?term=restaurants&latitude=${request.query.data.latitude}&longitude=${request.query.data.longitude}`,
+  Movies:`https://api.themoviedb.org/3/search/movie?api_key=${process.env.MOVIES_API}&language=en-US&query=${cityname}&page=1`,
+  Weathers:`https://api.darksky.net/forecast/${process.env.DARK_SKY_API}/${location.latitude},${location.longitude}`
+}
+
+
 app.use(cors());
 
 app.get('/location', getLocation);
-// app.get('/location', (request, response) => {
-//   getLocation(request.query.data)
-//     .then(locationData => response.send(locationData))
-//     .catch(error => handleError(error, response))
-// });
 
 app.get('/weather', getWeather);
 
@@ -102,16 +104,16 @@ Location.lookupLocation = (handler) => {
 }
 
 /*---------------------WEATHER--------------------------*/
-function getWeather(request, response){
-  const URL = `https://api.darksky.net/forecast/${process.env.DARK_SKY_API}/${request.query.data.latitude},${request.query.data.longitude}`;
-  return superagent.get(URL)
-    .then(forecastResults =>{
-      response.send(forecastResults.body.daily.data.map((day)=>{
-        return new DailyWeather(day);
-      }));
-    })
-    .catch(error => handleError(error, response));
-}
+// function getWeather(request, response){
+//   const URL = `https://api.darksky.net/forecast/${process.env.DARK_SKY_API}/${request.query.data.latitude},${request.query.data.longitude}`;
+//   return superagent.get(URL)
+//     .then(forecastResults =>{
+//       response.send(forecastResults.body.daily.data.map((day)=>{
+//         return new DailyWeather(day);
+//       }));
+//     })
+//     .catch(error => handleError(error, response));
+// }
 /*---------------------YELP--------------------------*/
 function getYelp(request, response){
   const URL = `https://api.yelp.com/v3/businesses/search?term=restaurants&latitude=${request.query.data.latitude}&longitude=${request.query.data.longitude}`;
@@ -137,13 +139,88 @@ function getMovie(request, response){
     .catch(error => handleError(error, response));
 }
 
+/*---------------------CONVERSION POINT--------------------------*/
 
-function DailyWeather(data){
+GenericAPI.prototype.save = function(id, object) {
+  const SQL = `INSERT INTO ${object.contructor.name.toLowerCase()} ${Object.keys(object)} VALUES ${Object.keys(object).map((value, idx) => {
+    return ('$'+(idx+1));
+  })};`;
+  const values = Object.values(this);
+  values.push(id);
+  client.query(SQL, values);
+};
+
+GenericAPI.lookup= function(handler, object) {
+  const SQL = `SELECT * FROM ${object.contructor.name.toLowerCase()} WHERE location_id=$1;`;
+  client.query(SQL, [handler.location.id])
+    .then(result => {
+      if(result.rowCount > 0) {
+        console.log('Got data for SQL');
+        handler.cacheHit(result);
+      } else {
+        console.log('Got data from API');
+        handler.cacheMiss();
+      }
+    })
+    .catch(error => handleError(error));
+};
+
+GenericAPI.fetch = function(location, object, response) {
+  const apiName = object.constructor.name;
+  const url = apiUrls[apiName];
+
+  switch (apiName) {
+  case Yelps:
+    return superagent.get(URL)
+      .set('Authorization', `Bearer ${process.env.YELP_API}`)
+      .then(yelpResults =>{
+        response.send(yelpResults.body.businesses.map((restaurants)=>{
+          return new Yelps(restaurants);
+        }));
+      })
+  case Movies:
+    return superagent.get(URL)
+      .then(movie =>{
+        response.send(movie.body.results.map((results)=>{
+          return new Movies(results);
+        }));
+      })
+
+  case Weathers:
+    return superagent.get(URL)
+      .then(forecastResults =>{
+        response.send(forecastResults.body.daily.data.map((day)=>{
+          return new Weathers(day);
+        }));
+      })
+      .catch(error => handleError(error, response));
+  }
+};
+
+function GenericAPI(request, response, object) {
+  const handler = {
+    location: request.query.data,
+
+    cacheHit: function(result) {
+      response.send(result.rows);
+    },
+
+    cacheMiss: function() {
+      GenericAPI.fetch(request.query.data)
+        .then( results => response.send(results))
+        .catch(console.error);
+    },
+  };
+  GenericAPI.lookup(handler);
+}
+
+
+function Weathers(data){
   this.forecast = data.summary;
   this.time = new Date(data.time * 1000).toString().slice(0,15);
 }
 
-function YelpRestaurants(data){
+function Yelps(data){
   this.name = data.name;
   this.image_url = data.image_url;
   this.price = data.price;
@@ -151,7 +228,7 @@ function YelpRestaurants(data){
   this.url = data.url;
 }
 
-function Movie(data){
+function Movies(data){
   this.title = data.title;
   this.overview = data.overview;
   this.average_vote = data.vote_average;
